@@ -229,17 +229,43 @@ def general_search(
     valid_filters = {"songs","videos","albums","artists","playlists","community_playlists","featured_playlists","uploads"}
     if filter and filter not in valid_filters:
         raise HTTPException(status_code=400, detail=f"Invalid filter '{filter}'. Choose from: {sorted(valid_filters)}")
-    try:
-        raw_results = yt.search(query=q, filter=filter, limit=limit, ignore_spelling=ignore_spelling)
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"YTMusic error: {exc}")
+
+    raw_results = None
+
+    if not filter:
+        # ytmusicapi crashes on unfiltered searches when YouTube Music returns a
+        # "Top Result" artist card (musicCardShelfHeaderBasicRenderer).
+        # Strategy: try unfiltered first; if it throws, fall back to per-type searches.
+        try:
+            raw_results = yt.search(query=q, filter=None, limit=limit, ignore_spelling=ignore_spelling)
+        except Exception:
+            raw_results = None  # will trigger fallback below
+
+        if raw_results is None:
+            # Fallback: fetch each type separately and merge
+            raw_results = []
+            for ft in ["songs", "artists", "albums", "videos", "community_playlists"]:
+                try:
+                    partial = yt.search(query=q, filter=ft, limit=5, ignore_spelling=ignore_spelling)
+                    if partial:
+                        raw_results.extend(partial)
+                except Exception:
+                    continue
+    else:
+        try:
+            raw_results = yt.search(query=q, filter=filter, limit=limit, ignore_spelling=ignore_spelling)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"YTMusic error: {exc}")
+
     results = [classify_and_format(item) for item in (raw_results or [])]
+
     if not filter:
         grouped: dict = {}
         for r in results:
             rtype = r.get("resultType", "other")
             grouped.setdefault(rtype, []).append(r)
         return {"query": q, "total": len(results), "grouped": grouped, "results": results}
+
     return {"query": q, "filter": filter, "total": len(results), "results": results}
 
 
